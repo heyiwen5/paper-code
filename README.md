@@ -128,6 +128,94 @@ At most three rows are discarded so that the two held-out folds have equal,
 even sizes. Set `random_state` to reproduce the sample split and the
 block-quantile partitions.
 
+## Random splitting and repeated-split summaries
+
+`random_state` controls two parts of the algorithm:
+
+1. A random permutation of the row indices is generated. The first
+   `4 * floor(n / 4)` indices are retained and divided into two equal, even
+   folds. Each fold is used once for testing and once for training.
+2. Within every fold and clipping candidate, the held-out tail-excess values
+   are randomly shuffled before being divided into blocks for the
+   block-quantile score.
+
+Consequently, using the same data and the same `random_state` reproduces the
+same covariance estimate. Randomness inside a user-supplied
+`mean_estimator` is not controlled automatically; seed that estimator in its
+wrapper if reproducibility is required.
+
+Under strong contamination, a particular split can occasionally place an
+unfavorable concentration of contaminated observations in one fold and
+produce an unusually large operator-norm result or estimation error. If the
+quantity of interest is the scalar operator norm of the covariance, run
+several splits and take the ordinary median of those scalar estimates:
+
+```python
+import numpy as np
+
+from adaptive_clipped_covariance import estimate_covariance
+
+results = [
+    estimate_covariance(x, random_state=seed)
+    for seed in range(101)
+]
+
+operator_norm_estimates = np.asarray([
+    np.linalg.norm(result.covariance, ord=2)
+    for result in results
+])
+median_operator_norm = float(np.median(operator_norm_estimates))
+```
+
+In a simulation where the true covariance `sigma_true` is known, the same
+idea can be used to summarize split-dependent operator-norm errors:
+
+```python
+operator_norm_errors = np.asarray([
+    np.linalg.norm(result.covariance - sigma_true, ord=2)
+    for result in results
+])
+median_operator_norm_error = float(np.median(operator_norm_errors))
+```
+
+These two medians are scalar summaries. The first estimates
+`||Sigma||_op`; the second summarizes estimation accuracy in a simulation.
+Neither one returns a complete covariance matrix.
+
+### If a complete covariance matrix is required
+
+When the true covariance is unknown and the desired output is a complete
+matrix, the scalar error cannot be computed. One possible aggregation is the
+operator-norm medoid
+
+```text
+Sigma_medoid = argmin_j sum_k ||Sigma_hat_j - Sigma_hat_k||_op.
+```
+
+This means: among the covariance matrices obtained from the repeated splits,
+select the one having the smallest total operator-norm distance to all the
+others. For example, if most split estimates form a tight cluster and one
+split produces an extreme matrix, the extreme matrix is far from almost
+every other estimate and will not be selected.
+
+It can be computed as follows:
+
+```python
+covariances = [result.covariance for result in results]
+total_distances = np.asarray([
+    sum(np.linalg.norm(left - right, ord=2) for right in covariances)
+    for left in covariances
+])
+medoid_result = results[int(np.argmin(total_distances))]
+medoid_covariance = medoid_result.covariance
+```
+
+The matrix medoid is different from the median of the scalar operator norms.
+It is useful only when a representative full covariance estimate is needed.
+Because all repeated runs use the same observed sample, repeated splitting
+is a practical stabilization device rather than an independent
+confidence-amplification guarantee.
+
 ## SCM comparison
 
 Run the included unknown-mean experiment:
